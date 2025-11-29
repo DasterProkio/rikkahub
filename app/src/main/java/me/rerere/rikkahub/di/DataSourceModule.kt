@@ -28,9 +28,7 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 val dataSourceModule = module {
-    single {
-        SettingsStore(context = get(), scope = get())
-    }
+    single { SettingsStore(context = get(), scope = get()) }
 
     single {
         Room.databaseBuilder(get(), AppDatabase::class.java, "rikka_hub")
@@ -38,9 +36,7 @@ val dataSourceModule = module {
             .build()
     }
 
-    single {
-        AssistantTemplateLoader(settingsStore = get())
-    }
+    single { AssistantTemplateLoader(settingsStore = get()) }
 
     single {
         PebbleEngine.Builder()
@@ -52,17 +48,9 @@ val dataSourceModule = module {
 
     single { TemplateTransformer(engine = get(), settingsStore = get()) }
 
-    single {
-        get<AppDatabase>().conversationDao()
-    }
-
-    single {
-        get<AppDatabase>().memoryDao()
-    }
-
-    single {
-        get<AppDatabase>().genMediaDao()
-    }
+    single { get<AppDatabase>().conversationDao() }
+    single { get<AppDatabase>().memoryDao() }
+    single { get<AppDatabase>().genMediaDao() }
 
     single { McpManager(settingsStore = get(), appScope = get()) }
 
@@ -78,8 +66,7 @@ val dataSourceModule = module {
     }
 
     single<OkHttpClient> {
-        val acceptLang = AcceptLanguageBuilder.fromAndroid(get())
-            .build()
+        val acceptLang = AcceptLanguageBuilder.fromAndroid(get()).build()
         OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.MINUTES)
@@ -94,24 +81,16 @@ val dataSourceModule = module {
                     .build()
                 chain.proceed(request)
             }
-            .addInterceptor(AIRequestInterceptor(remoteConfig = get()))
+            .addInterceptor(AIRequestInterceptor())
             .addInterceptor(HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.HEADERS
             })
             .build()
     }
 
-    single {
-        SponsorAPI.create(get())
-    }
-
-    single {
-        ProviderManager(client = get())
-    }
-
-    single {
-        WebdavSync(settingsStore = get(), json = get(), context = get())
-    }
+    single { SponsorAPI.create(get()) }
+    single { ProviderManager(client = get()) }
+    single { WebdavSync(settingsStore = get(), json = get(), context = get()) }
 
     single<Retrofit> {
         Retrofit.Builder()
@@ -120,7 +99,5 @@ val dataSourceModule = module {
             .build()
     }
 
-    single<RikkaHubAPI> {
-        get<Retrofit>().create(RikkaHubAPI::class.java)
-    }
+    single<RikkaHubAPI> { get<Retrofit>().create(RikkaHubAPI::class.java) }
 }
