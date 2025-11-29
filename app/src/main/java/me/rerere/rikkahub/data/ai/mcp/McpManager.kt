@@ -43,6 +43,7 @@ class McpManager(
         .writeTimeout(120, TimeUnit.SECONDS)
         .followSslRedirects(true)
         .followRedirects(true)
+        .pingInterval(15, TimeUnit.SECONDS)
         .build()
 
     private val clients: MutableMap<McpServerConfig, Client> = mutableMapOf()
