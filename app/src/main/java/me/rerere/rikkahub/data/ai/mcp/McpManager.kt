@@ -41,6 +41,8 @@ class McpManager(
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES)
         .writeTimeout(120, TimeUnit.SECONDS)
+        .pingInterval(30, TimeUnit.SECONDS) // ASH_PATCH: 心跳保活
+        .retryOnConnectionFailure(true) // ASH_PATCH: 断连重试
         .followSslRedirects(true)
         .followRedirects(true)
         .pingInterval(15, TimeUnit.SECONDS)
