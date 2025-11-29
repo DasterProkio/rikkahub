@@ -41,12 +41,12 @@ internal class SseClientTransport(
 ) : AbstractTransport() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val eventSourceFactory = EventSources.createFactory(client)
-    // initialized 现在表示是否处于"活跃"状态（未被显式关闭）
     private val active: AtomicBoolean = AtomicBoolean(false)
     private var session: EventSource? = null
-    // endpoint 只能完成一次，所以重连时不应重新 new 它，除非我们重置它（比较麻烦）
-    // 这里假设 endpoint 地址在重连期间不会变
-    private val endpoint = CompletableDeferred<String>()
+    
+    // ASH FIX V2: 使用 Volatile var 以便重置，不再是 final val
+    @Volatile 
+    private var endpointDeferred = CompletableDeferred<String>()
 
     private var job: Job? = null
 
@@ -64,33 +64,25 @@ internal class SseClientTransport(
 
     override suspend fun start() {
         if (active.getAndSet(true)) {
-            error(
-                "SSEClientTransport already started! " +
-                    "If using Client class, note that connect() calls start() automatically.",
-            )
+            error("SSEClientTransport already started!")
         }
         
         connectInternal()
 
-        // 等待首次连接成功（获取 endpoint）
-        // 如果首次连接就失败且重连也没用，这里会超时抛出异常
-        // 但有了重连机制，它可能会挂起直到连上
         try {
             withTimeout(30000) {
-                endpoint.await()
-                Log.i(TAG, "start: Connected to endpoint ${endpoint.getCompleted()}")
+                // 等待当前的 deferred 完成
+                val url = endpointDeferred.await()
+                Log.i(TAG, "start: Connected to endpoint $url")
             }
         } catch (e: Exception) {
-            // 如果首次连接超时，我们应该关闭吗？
-            // 为了保险，如果是首次失败，我们让它抛出异常
-            if (!endpoint.isCompleted) {
+            if (!endpointDeferred.isCompleted) {
                 close()
                 throw e
             }
         }
     }
 
-    // ASH PATCH: 提取连接逻辑以支持重连
     private fun connectInternal() {
         if (!active.get()) return
 
@@ -122,7 +114,6 @@ internal class SseClientTransport(
                 override fun onClosed(eventSource: EventSource) {
                     super.onClosed(eventSource)
                     Log.i(TAG, "onClosed: Server closed connection")
-                    // 服务端关闭，尝试重连
                     scheduleReconnect()
                 }
 
@@ -133,8 +124,6 @@ internal class SseClientTransport(
                 ) {
                     super.onFailure(eventSource, t, response)
                     Log.e(TAG, "onFailure: Connection lost ($t). Attempting reconnect...")
-                    
-                    // ASH PATCH: 关键点！不要报错，不要关闭，而是重连！
                     scheduleReconnect()
                 }
 
@@ -144,28 +133,23 @@ internal class SseClientTransport(
                     type: String?,
                     data: String
                 ) {
-                    Log.i(TAG, "onEvent($baseUrl):  #$id($type)") // 简化日志，不打印 data 防止刷屏
+                    Log.i(TAG, "onEvent($baseUrl):  #$id($type)")
                     when (type) {
-                        "error" -> {
-                            Log.e(TAG, "SSE Error Event: $data")
-                            // 某些服务端可能会发 error 事件，视情况重连
-                        }
-
+                        "error" -> Log.e(TAG, "SSE Error: $data")
                         "open" -> { }
-
                         "endpoint" -> {
-                            if (!endpoint.isCompleted) {
-                                val endpointData =
-                                    if (data.startsWith("http://") || data.startsWith("https://")) {
-                                        data
-                                    } else {
-                                        baseUrl + if (data.startsWith("/")) data else "/$data"
-                                    }
-                                Log.i(TAG, "onEvent: endpoint received: $endpointData")
-                                endpoint.complete(endpointData)
-                            }
+                            // ASH FIX V2: 无论如何，收到 endpoint 就尝试完成当前的 deferred
+                            val endpointData =
+                                if (data.startsWith("http://") || data.startsWith("https://")) {
+                                    data
+                                } else {
+                                    baseUrl + if (data.startsWith("/")) data else "/$data"
+                                }
+                            Log.i(TAG, "onEvent: endpoint received: $endpointData")
+                            
+                            // 尝试完成当前的 deferred
+                            endpointDeferred.complete(endpointData)
                         }
-
                         else -> {
                             scope.launch {
                                 try {
@@ -173,7 +157,6 @@ internal class SseClientTransport(
                                     _onMessage(message)
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Message decode failed", e)
-                                    // _onError(e) // 解析失败不应导致断连
                                 }
                             }
                         }
@@ -187,7 +170,14 @@ internal class SseClientTransport(
         if (!active.get()) return
         
         scope.launch {
-            delay(3000) // 等待 3 秒
+            // ASH FIX V2: 在重连等待期间，重置 deferred，准备接收新的 Session ID
+            // 只有当旧的已经完成时才重置，避免 start() 还没等到结果就被重置了
+            if (endpointDeferred.isCompleted) {
+                Log.i(TAG, "Resetting endpoint for new session...")
+                endpointDeferred = CompletableDeferred()
+            }
+            
+            delay(3000)
             if (active.get()) {
                 Log.i(TAG, "Reconnecting now...")
                 connectInternal()
@@ -197,15 +187,22 @@ internal class SseClientTransport(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override suspend fun send(message: JSONRPCMessage) {
-        if (!endpoint.isCompleted) {
-            error("Not connected (endpoint not received)")
+        // ASH FIX V2: 获取当前的 deferred 实例
+        val currentDeferred = endpointDeferred
+        
+        if (!currentDeferred.isCompleted) {
+            // 如果正在重连中，等待新的 Session ID
+            Log.i(TAG, "send: Waiting for reconnection/endpoint...")
+            currentDeferred.await()
         }
 
-        Log.i(TAG, "send: POSTing message...")
+        // 获取最新的 URL
+        val url = currentDeferred.getCompleted()
+        Log.i(TAG, "send: POSTing to $url ...")
 
         try {
             val request = Request.Builder()
-                .url(endpoint.getCompleted())
+                .url(url) 
                 .apply {
                     for ((key, value) in headers) {
                         addHeader(key, value)
@@ -225,21 +222,16 @@ internal class SseClientTransport(
                 Log.i(TAG, "send: POST successful")
             }
         } catch (e: Exception) {
-            // 发送失败通常意味着网络问题，这里抛出异常让上层知道
-            // 但 transport 本身会通过 onFailure 自动重连
+            // 发送失败不直接关闭，transport 会自动重连
             _onError(e)
             throw e
         }
     }
 
     override suspend fun close() {
-        if (!active.compareAndSet(true, false)) {
-            // 已经关闭了
-            return
-        }
-
+        if (!active.compareAndSet(true, false)) return
         session?.cancel()
-        _onClose() // 通知上层已关闭
+        _onClose()
         job?.cancelAndJoin()
     }
 }
