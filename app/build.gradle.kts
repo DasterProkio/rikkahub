@@ -244,6 +244,7 @@ dependencies {
     // WebDav
     implementation(libs.dav4jvm) {
         exclude(group = "org.ogce", module = "xpp3")
+    implementation("com.google.guava:guava:33.3.1-android") // ASH_PATCH: Fix missing CacheBuilder
     }
 
     // Apache Commons Text
